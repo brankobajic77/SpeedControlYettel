@@ -1,4 +1,3 @@
-
 // swift-tools-version: 5.9
 import PackageDescription
 
@@ -13,8 +12,12 @@ let package = Package(
     targets: [
         .target(
             name: "YettelSpeedSDK",
-            path: "Sources/YettelSpeedSDK"
+            path: "YettelSpeedSDK/Sources/YettelSpeedSDK"
+        ),
+        .testTarget(
+            name: "YettelSpeedSDKTests",
+            dependencies: ["YettelSpeedSDK"],
+            path: "Tests/YettelSpeedSDKTests"
         )
     ]
 )
-
