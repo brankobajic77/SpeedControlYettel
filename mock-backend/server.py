@@ -49,8 +49,8 @@ class AvgSpeedReportDTO(BaseModel):
 
 # --- Seed data (adjust to your area if needed) ---
 CAMERAS: List[CameraDTO] = [
-    CameraDTO(id="SOF-Biz park", lat=42.6281474, lng=23.3711704, direction=270.0),
-    CameraDTO(id="SOF-Res Park", lat=42.6199365, lng=23.3664081, direction=270.0),
+    CameraDTO(id="SOF-A1", lat=42.6281474, lng=23.3711704, direction=270.0),
+    CameraDTO(id="SOF-B1", lat=42.6199365, lng=23.3664081, direction=270.0),
 ]
 SEGMENTS: List[SegmentDTO] = [
     SegmentDTO(name="Ring A→B", startCameraId="SOF-A1", endCameraId="SOF-B1", geofenceRadius=150),
