@@ -14,20 +14,29 @@
   th{position:sticky;top:0;background:#fafafa}
   .muted{color:#666}
   .pill{font-size:12px;padding:2px 6px;border-radius:999px;border:1px solid #ddd;background:#fff}
+  .right{margin-left:auto}
+  .empty{padding:14px;color:#666}
 </style>
 </head>
 <body>
 <h2>Yettel – Average Speed Reports (Admin)</h2>
 
 <div class="row">
-  <span class="pill">Backend: <span id="backend"></span></span>
+  <span class="pill">Backend: <span id="backend">—</span></span>
   <label>Since <input id="since" type="datetime-local"/></label>
   <label>Segment <input id="segment" placeholder="exact name"/></label>
   <label>Limit <input id="limit" type="number" min="1" max="5000" value="200" style="width:90px"/></label>
   <button id="refresh">Refresh</button>
+  <button id="add">Add sample</button>
   <button id="export">Export CSV</button>
   <button id="clear" title="Dev only – requires confirm">Clear (dev)</button>
-  <span id="status" class="pill">Ready</span>
+  <span id="status" class="pill right">Ready</span>
+</div>
+
+<div class="row" id="statsRow" style="display:none">
+  <span class="pill">Total: <span id="statCount">0</span></span>
+  <span class="pill">By segment: <span id="statBySegment">—</span></span>
+  <span class="pill">Last refresh: <span id="lastRef">—</span></span>
 </div>
 
 <table id="tbl">
@@ -50,17 +59,73 @@
 
 <script>
 // === SET ME to your Codespaces HTTPS (no trailing /) ===
-const BACKEND_BASE_URL = "https://shiny-space-happiness-5g9r9gv6xx99h7w5r-8000.app.github.dev";
+const BACKEND_BASE_URL = "https://shiny-space-happiness-5g9r9gv6xx99h7w5r-8000.app.github.dev"; // ← PROVERI PORT!
 
 document.getElementById('backend').textContent = BACKEND_BASE_URL;
 
 function fmt(n, d=0){ return (typeof n === 'number' && !isNaN(n)) ? n.toFixed(d) : ''; }
 function setStatus(t){ document.getElementById('status').textContent = t; }
+function setLastRefresh(){ document.getElementById('lastRef').textContent = new Date().toLocaleString(); }
 
 async function fetchJSON(url){
   const r = await fetch(url, {cache: 'no-store'});
   if(!r.ok) throw new Error('HTTP '+r.status);
   return r.json();
+}
+async function postJSON(path, body){
+  const r = await fetch(BACKEND_BASE_URL + path, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body),
+    cache:'no-store'
+  });
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return r.json();
+}
+
+function renderTable(rows){
+  const tbody = document.querySelector('#tbl tbody');
+  tbody.innerHTML = '';
+  if(!rows.length){
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 10;
+    td.className = 'empty';
+    td.textContent = 'No data yet.';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+  rows.forEach((r, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${i+1}</td>
+      <td>${r.segmentName || ''}</td>
+      <td>${r.startCameraId || ''} → ${r.endCameraId || ''}</td>
+      <td>${r.startedAt ? new Date(r.startedAt).toLocaleString() : ''}</td>
+      <td>${r.endedAt ? new Date(r.endedAt).toLocaleString() : ''}</td>
+      <td>${fmt(r.durationSec, 0)}</td>
+      <td>${fmt(r.routeDistanceMeters, 0)}</td>
+      <td>${fmt(r.avgSpeedKmH, 1)}</td>
+      <td>${r.appVersion || ''}</td>
+      <td class="muted">${r.deviceId || ''}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function loadStats(){
+  try{
+    const s = await fetchJSON(BACKEND_BASE_URL + '/v1/traffic/reports/stats');
+    document.getElementById('statCount').textContent = s.count ?? 0;
+    const bySeg = s.bySegment || {};
+    const parts = Object.keys(bySeg).map(k => `${k}: ${bySeg[k]}`);
+    document.getElementById('statBySegment').textContent = parts.length ? parts.join('  •  ') : '—';
+    document.getElementById('statsRow').style.display = '';
+  }catch(_){
+    // stats endpoint možda ne postoji — tiho preskoči
+    document.getElementById('statsRow').style.display = 'none';
+  }
 }
 
 async function refresh(){
@@ -78,24 +143,18 @@ async function refresh(){
     const url = BACKEND_BASE_URL + '/v1/traffic/reports' + (qs.toString()? ('?'+qs.toString()) : '');
     const data = await fetchJSON(url);
 
-    const tbody = document.querySelector('#tbl tbody');
-    tbody.innerHTML = '';
-    data.forEach((r, i) => {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td>${i+1}</td>
-        <td>${r.segmentName || ''}</td>
-        <td>${r.startCameraId || ''} → ${r.endCameraId || ''}</td>
-        <td>${r.startedAt ? new Date(r.startedAt).toLocaleString() : ''}</td>
-        <td>${r.endedAt ? new Date(r.endedAt).toLocaleString() : ''}</td>
-        <td>${fmt(r.durationSec, 0)}</td>
-        <td>${fmt(r.routeDistanceMeters, 0)}</td>
-        <td>${fmt(r.avgSpeedKmH, 1)}</td>
-        <td>${r.appVersion || ''}</td>
-        <td class="muted">${r.deviceId || ''}</td>
-      `;
-      tbody.appendChild(tr);
+    // compute durationSec ako backend nije dodao
+    data.forEach(r => {
+      if (r.startedAt && r.endedAt && (r.durationSec == null)) {
+        const st = new Date(r.startedAt).getTime();
+        const et = new Date(r.endedAt).getTime();
+        if(!isNaN(st) && !isNaN(et)) r.durationSec = (et - st)/1000;
+      }
     });
+
+    renderTable(data);
+    await loadStats();
+    setLastRefresh();
     setStatus(`Loaded ${data.length}`);
   }catch(e){
     setStatus('Error: ' + (e?.message || e));
@@ -115,7 +174,7 @@ async function clearDev(){
   const sure = confirm('This will DELETE avg_speed_reports.json on the server. Continue?');
   if(!sure) return;
   try{
-    const r = await fetch(BACKEND_BASE_URL + '/v1/traffic/reports?confirm=YES', { method: 'DELETE' });
+    const r = await fetch(BACKEND_BASE_URL + '/v1/traffic/reports?confirm=YES', { method: 'DELETE', cache:'no-store' });
     if(!r.ok) throw new Error('HTTP ' + r.status);
     await refresh();
     alert('Cleared.');
@@ -124,9 +183,35 @@ async function clearDev(){
   }
 }
 
+// Sends one sample report to verify pipeline end-to-end
+async function addSample(){
+  try{
+    const now = new Date();
+    const start = new Date(now.getTime() - 90*1000); // 90s ago
+    const payload = {
+      // prilagodi ovim ID-jevima/segmentu ako si ih menjao u server.py
+      segmentName: "Ring A→B",
+      startCameraId: "SOF-A1",
+      endCameraId: "SOF-B1",
+      startedAt: start.toISOString(),
+      endedAt: now.toISOString(),
+      routeDistanceMeters: 1200,
+      avgSpeedKmH: 48.0,
+      appVersion: "admin-test",
+      deviceId: "admin"
+    };
+    await postJSON('/v1/traffic/avg-speed-report', payload);
+    await refresh();
+    alert('Sample added.');
+  }catch(e){
+    alert('Failed: ' + (e?.message || e));
+  }
+}
+
 document.getElementById('refresh').onclick = refresh;
 document.getElementById('export').onclick  = exportCsv;
 document.getElementById('clear').onclick   = clearDev;
+document.getElementById('add').onclick     = addSample;
 
 // auto-load on first open
 refresh();
