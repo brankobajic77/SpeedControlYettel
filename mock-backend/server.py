@@ -70,14 +70,14 @@ CAMERAS: List[CameraDTO] = [
 
 # Cover all cameras with some test segments so geofences are drawn for each
 SEGMENTS: List[SegmentDTO] = [
-    SegmentDTO(name="A→C", startCameraId="SOF-A1", endCameraId="SOF-C1", geofenceRadius=300),
-    SegmentDTO(name="C→D", startCameraId="SOF-C1", endCameraId="SOF-D1", geofenceRadius=300),
-    SegmentDTO(name="D→F", startCameraId="SOF-D1", endCameraId="SOF-F1", geofenceRadius=300),
-    SegmentDTO(name="F→B", startCameraId="SOF-F1", endCameraId="SOF-B1", geofenceRadius=300),
-    SegmentDTO(name="B→E", startCameraId="SOF-B1", endCameraId="SOF-E1", geofenceRadius=300),
-    SegmentDTO(name="E→G", startCameraId="SOF-E1", endCameraId="SOF-G1", geofenceRadius=300),
-    SegmentDTO(name="G→H", startCameraId="SOF-G1", endCameraId="SOF-H1", geofenceRadius=300),
-    SegmentDTO(name="H→A", startCameraId="SOF-H1", endCameraId="SOF-A1", geofenceRadius=300),
+    SegmentDTO(name="A→C", startCameraId="SOF-A1", endCameraId="SOF-C1", geofenceRadius=100),
+    SegmentDTO(name="C→D", startCameraId="SOF-C1", endCameraId="SOF-D1", geofenceRadius=100),
+    SegmentDTO(name="D→F", startCameraId="SOF-D1", endCameraId="SOF-F1", geofenceRadius=100),
+    SegmentDTO(name="F→B", startCameraId="SOF-F1", endCameraId="SOF-B1", geofenceRadius=100),
+    SegmentDTO(name="B→E", startCameraId="SOF-B1", endCameraId="SOF-E1", geofenceRadius=100),
+    SegmentDTO(name="E→G", startCameraId="SOF-E1", endCameraId="SOF-G1", geofenceRadius=100),
+    SegmentDTO(name="G→H", startCameraId="SOF-G1", endCameraId="SOF-H1", geofenceRadius=100),
+    SegmentDTO(name="H→A", startCameraId="SOF-H1", endCameraId="SOF-A1", geofenceRadius=100),
 ]
 
 REPORTS_FILE = "avg_speed_reports.json"
