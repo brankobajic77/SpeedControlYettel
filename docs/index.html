@@ -69,7 +69,7 @@ function haversine(a,b){
 function bearing(from,to){
   const φ1=toRad(from.lat), φ2=toRad(to.lat), Δλ=toRad(to.lng-from.lng);
   const y=Math.sin(Δλ)*Math.cos(φ2);
-  const x=Math.cos(φ1)*Math.sin(φ2)-Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ);
+  const x=Math.cos(φ1)*sin(φ2)-Math.sin(φ1)*cos(φ2)*Math.cos(Δλ);
   const θ=Math.atan2(y,x)*180/Math.PI;
   return (θ+360)%360;
 }
@@ -143,10 +143,13 @@ async function loadData(){
 
   const ids = Object.keys(geofences);
   if(ids.length){
-    const group = L.featureGroup(ids.map(id => geofences[id]));
-    map.fitBounds(group.getBounds().pad(0.2));
+    const group = L.featureGroup(Object.values(geofences));
+    // Safari fix: wait until map is ready + defer to next tick
+    map.whenReady(() => setTimeout(() => {
+      map.fitBounds(group.getBounds().pad(0.2));
+      map.invalidateSize();
+    }, 0));
   } else {
-    // Fallback: center on first camera if any
     if(cameras.length){ map.setView([cameras[0].lat, cameras[0].lng], 14); }
   }
 }
@@ -191,7 +194,7 @@ async function onPosition(pos){
     const startCam = cameras.find(c => c.id === seg.startCameraId);
     if(!startCam) continue;
     const circle = geofences[startCam.id]; if(!circle) continue;
-    const inside = circle.getLatLng().distanceTo(cur) <= (seg.geofenceRadius ?? GEOFENCE_DEFAULT_RADIUS);
+    const inside = L.latLng(cur).distanceTo(circle.getLatLng()) <= (seg.geofenceRadius ?? GEOFENCE_DEFAULT_RADIUS);
     if(!inside || !canEnter(startCam.id)) continue;
 
     if(course != null){
@@ -209,7 +212,7 @@ async function onPosition(pos){
     const endCam = cameras.find(c => c.id === seg.endCameraId);
     if(!endCam) continue;
     const circle = geofences[endCam.id]; if(!circle) continue;
-    const inside = circle.getLatLng().distanceTo(cur) <= (seg.geofenceRadius ?? GEOFENCE_DEFAULT_RADIUS);
+    const inside = L.latLng(cur).distanceTo(circle.getLatLng()) <= (seg.geofenceRadius ?? GEOFENCE_DEFAULT_RADIUS);
     if(!inside || !canEnter(endCam.id)) continue;
 
     const startTime = startTimestamps[seg.startCameraId];
@@ -254,8 +257,14 @@ async function onPosition(pos){
 // ====== BOOT ======
 (async function boot(){
   initMap();
-  try{ await loadData(); log('Loaded cameras and segments.'); setStatus('ready'); }
-  catch(e){ log('Failed to load backend data: ' + e.message); setStatus('error'); }
+  try{
+    await loadData();
+    log('Loaded cameras and segments.');
+    setStatus('ready');
+  }catch(e){
+    log('Failed to load backend data: ' + e.message);
+    setStatus('error');
+  }
   document.getElementById('startBtn').onclick = startTracking;
   document.getElementById('stopBtn').onclick = stopTracking;
 })();
