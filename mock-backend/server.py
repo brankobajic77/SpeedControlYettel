@@ -4,16 +4,18 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
-import json, os, socket
+from fastapi.responses import StreamingResponse
+from collections import Counter
+import json, os, io, csv, socket
 
-# --- CORS: allow your GitHub Pages origin (no trailing slash) ---
+# --- CORS: dozvoli tvoj GitHub Pages origin (bez završne /) ---
 ALLOWED_ORIGINS = [
     "https://brankobajic77.github.io",
 ]
 
 app = FastAPI(title="Yettel Speed Mock")
 
-# No-cache to avoid stale responses in browsers/CDN
+# --- No-cache: izbegni keširane odgovore u browseru/CDN-u ---
 @app.middleware("http")
 async def no_cache(request, call_next):
     resp = await call_next(request)
@@ -26,7 +28,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
     max_age=0,
 )
@@ -42,7 +44,7 @@ class SegmentDTO(BaseModel):
     name: str
     startCameraId: str
     endCameraId: str
-    geofenceRadius: Optional[float] = 300  # meters (bigger for easier testing)
+    geofenceRadius: Optional[float] = 300  # meters (može da se prepiše po segmentu)
 
 class AvgSpeedReportDTO(BaseModel):
     segmentName: str
@@ -86,7 +88,7 @@ REPORTS_FILE = "avg_speed_reports.json"
 print("SERVER FILE:", __file__)
 print("SEED CAMERAS:", [(c.id, c.lat, c.lng) for c in CAMERAS])
 
-# Handy debug endpoints
+# --- Handy debug endpoints ---
 @app.get("/whoami")
 def whoami():
     return {
@@ -95,6 +97,7 @@ def whoami():
         "codespace": os.getenv("CODESPACE_NAME"),
         "time": datetime.utcnow().isoformat() + "Z",
         "cameras": [c.model_dump() for c in CAMERAS],
+        "segments": [s.model_dump() for s in SEGMENTS],
     }
 
 @app.get("/debug/seed")
@@ -114,7 +117,7 @@ def _auth_ok(authorization: Optional[str]) -> bool:
 def ping():
     return {"status": "ok", "time": datetime.utcnow().isoformat() + "Z"}
 
-# --- API routes ---
+# --- Core API routes ---
 @app.get("/v1/traffic/cameras", response_model=List[CameraDTO])
 def get_cameras(authorization: Optional[str] = Header(default=None)):
     if not _auth_ok(authorization):
@@ -146,11 +149,10 @@ def post_avg_speed(report: AvgSpeedReportDTO, authorization: Optional[str] = Hea
 
     print("New avg-speed report:", report)
     return {"status": "ok"}
-# --- Admin: list/export/clear reports ---
-from fastapi.responses import StreamingResponse
-from collections import Counter
-import io, csv
 
+# ======================
+# Admin API (list/stats/export/clear)
+# ======================
 def _load_reports():
     if not os.path.exists(REPORTS_FILE):
         return []
@@ -160,8 +162,7 @@ def _load_reports():
     except Exception:
         return []
 
-def _parse_iso(dt_str: str) -> datetime:
-    # tolerate "Z" suffix and plain ISO
+def _parse_iso(dt_str: str) -> Optional[datetime]:
     try:
         if dt_str.endswith("Z"):
             dt_str = dt_str.replace("Z", "+00:00")
@@ -177,16 +178,17 @@ def list_reports(
 ):
     items = _load_reports()
 
-    # optional filters
     if since:
         sdt = _parse_iso(since)
         if sdt:
-            items = [r for r in items
-                     if _parse_iso(r.get("endedAt", "")) and _parse_iso(r["endedAt"]) >= sdt]
+            items = [
+                r for r in items
+                if _parse_iso(r.get("endedAt", "")) and _parse_iso(r["endedAt"]) >= sdt
+            ]
     if segment:
         items = [r for r in items if r.get("segmentName") == segment]
 
-    # add computed durationSec
+    # computed duration
     for r in items:
         st = _parse_iso(r.get("startedAt",""))
         et = _parse_iso(r.get("endedAt",""))
