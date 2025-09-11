@@ -55,7 +55,18 @@ CAMERAS: List[CameraDTO] = [
 SEGMENTS: List[SegmentDTO] = [
     SegmentDTO(name="Ring A→B", startCameraId="SOF-A1", endCameraId="SOF-B1", geofenceRadius=150),
 ]
+# --- DEBUG prints on startup ---
+print("SERVER FILE:", __file__)
+print("SEED CAMERAS:", [(c.id, c.lat, c.lng) for c in CAMERAS])
 
+# --- DEBUG endpoint: see what this running process has loaded ---
+@app.get("/debug/seed")
+def debug_seed():
+    return {
+        "file": __file__,
+        "cameras": [c.model_dump() for c in CAMERAS],
+        "segments": [s.model_dump() for s in SEGMENTS],
+    }
 REPORTS_FILE = "avg_speed_reports.json"
 
 def _auth_ok(authorization: Optional[str]) -> bool:
