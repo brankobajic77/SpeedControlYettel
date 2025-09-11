@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Yettel – Reports Admin</title>
+<style>
+  body{font:14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin:18px;}
+  .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
+  input,select,button{padding:8px 10px;border:1px solid #ccc;border-radius:8px;background:#fff}
+  button{cursor:pointer}
+  table{width:100%;border-collapse:collapse;margin-top:10px}
+  th,td{padding:8px;border-bottom:1px solid #eee;vertical-align:top}
+  th{position:sticky;top:0;background:#fafafa}
+  .muted{color:#666}
+  .pill{font-size:12px;padding:2px 6px;border-radius:999px;border:1px solid #ddd;background:#fff}
+</style>
+</head>
+<body>
+<h2>Yettel – Average Speed Reports (Admin)</h2>
+
+<div class="row">
+  <span class="pill">Backend: <span id="backend"></span></span>
+  <label>Since <input id="since" type="datetime-local"/></label>
+  <label>Segment <input id="segment" placeholder="exact name"/></label>
+  <label>Limit <input id="limit" type="number" min="1" max="5000" value="200" style="width:90px"/></label>
+  <button id="refresh">Refresh</button>
+  <button id="export">Export CSV</button>
+  <button id="clear" title="Dev only – requires confirm">Clear (dev)</button>
+  <span id="status" class="pill">Ready</span>
+</div>
+
+<table id="tbl">
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>Segment</th>
+      <th>Start → End</th>
+      <th>Started</th>
+      <th>Ended</th>
+      <th>Duration (s)</th>
+      <th>Distance (m)</th>
+      <th>Avg (km/h)</th>
+      <th>App</th>
+      <th class="muted">Device</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<script>
+// === SET ME to your Codespaces HTTPS (no trailing /) ===
+const BACKEND_BASE_URL = "https://YOUR-SUBDOMAIN-8020.app.github.dev";
+
+document.getElementById('backend').textContent = BACKEND_BASE_URL;
+
+function fmt(n, d=0){ return (typeof n === 'number' && !isNaN(n)) ? n.toFixed(d) : ''; }
+function setStatus(t){ document.getElementById('status').textContent = t; }
+
+async function fetchJSON(url){
+  const r = await fetch(url, {cache: 'no-store'});
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return r.json();
+}
+
+async function refresh(){
+  try{
+    setStatus('Loading…');
+    const qs = new URLSearchParams();
+    const since = document.getElementById('since').value;
+    const segment = document.getElementById('segment').value.trim();
+    const limit = parseInt(document.getElementById('limit').value || '200', 10);
+
+    if (since) qs.set('since', new Date(since).toISOString());
+    if (segment) qs.set('segment', segment);
+    if (limit) qs.set('limit', String(limit));
+
+    const url = BACKEND_BASE_URL + '/v1/traffic/reports' + (qs.toString()? ('?'+qs.toString()) : '');
+    const data = await fetchJSON(url);
+
+    const tbody = document.querySelector('#tbl tbody');
+    tbody.innerHTML = '';
+    data.forEach((r, i) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${i+1}</td>
+        <td>${r.segmentName || ''}</td>
+        <td>${r.startCameraId || ''} → ${r.endCameraId || ''}</td>
+        <td>${r.startedAt ? new Date(r.startedAt).toLocaleString() : ''}</td>
+        <td>${r.endedAt ? new Date(r.endedAt).toLocaleString() : ''}</td>
+        <td>${fmt(r.durationSec, 0)}</td>
+        <td>${fmt(r.routeDistanceMeters, 0)}</td>
+        <td>${fmt(r.avgSpeedKmH, 1)}</td>
+        <td>${r.appVersion || ''}</td>
+        <td class="muted">${r.deviceId || ''}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    setStatus(`Loaded ${data.length}`);
+  }catch(e){
+    setStatus('Error: ' + (e?.message || e));
+  }
+}
+
+async function exportCsv(){
+  const a = document.createElement('a');
+  a.href = BACKEND_BASE_URL + '/v1/traffic/reports/export.csv';
+  a.download = 'avg_speed_reports.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+async function clearDev(){
+  const sure = confirm('This will DELETE avg_speed_reports.json on the server. Continue?');
+  if(!sure) return;
+  try{
+    const r = await fetch(BACKEND_BASE_URL + '/v1/traffic/reports?confirm=YES', { method: 'DELETE' });
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    await refresh();
+    alert('Cleared.');
+  }catch(e){
+    alert('Failed: ' + (e?.message || e));
+  }
+}
+
+document.getElementById('refresh').onclick = refresh;
+document.getElementById('export').onclick  = exportCsv;
+document.getElementById('clear').onclick   = clearDev;
+
+// auto-load on first open
+refresh();
+</script>
+</body>
+</html>
