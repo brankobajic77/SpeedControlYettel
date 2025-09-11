@@ -1,1 +1,51 @@
-const BACKEND_BASE_URL = "https://probable-disco-4jrvrjq4wq94h5xp7-8000.app.github.dev/"
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Yettel Average Speed – Web Smoke Test</title>
+  <style>
+    body{font:14px/1.5 system-ui, sans-serif; margin:24px; max-width:780px}
+    code{background:#f6f8fa; padding:2px 6px; border-radius:6px}
+    .ok{color:#0a7}
+    .err{color:#c22}
+  </style>
+</head>
+<body>
+  <h1>Yettel Average Speed – Web Smoke Test</h1>
+  <p>Backend: <code id="base"></code></p>
+  <p>Status: <span id="status">loading…</span></p>
+  <h3>Loaded cameras</h3>
+  <ul id="cams"></ul>
+  <script>
+    // ←↓↓↓ OVDE STAVI TAČAN Codespaces HTTPS URL (bez završne /)
+    const BACKEND_BASE_URL = "https://probable-disco-4jrvrjq4wq94h5xp7-8000.app.github.dev";
+
+    document.getElementById('base').textContent = BACKEND_BASE_URL;
+
+    async function ping() {
+      try {
+        const r = await fetch(BACKEND_BASE_URL + "/v1/traffic/cameras", {
+          headers: { "Authorization": "Bearer dev-token" }
+        });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const cams = await r.json();
+        document.getElementById('status').textContent = "OK";
+        document.getElementById('status').className = "ok";
+        const ul = document.getElementById('cams');
+        ul.innerHTML = "";
+        cams.forEach(c => {
+          const li = document.createElement('li');
+          li.textContent = `${c.id} @ (${c.lat.toFixed(5)}, ${c.lng.toFixed(5)})`;
+          ul.appendChild(li);
+        });
+      } catch (e) {
+        const s = document.getElementById('status');
+        s.textContent = "ERROR: " + e.message;
+        s.className = "err";
+      }
+    }
+    ping();
+  </script>
+</body>
+</html>
