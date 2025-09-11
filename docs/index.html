@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
   <title>Yettel Average Speed (Web Test)</title>
-  <!-- Leaflet CSS/JS (CDN) -->
+  <!-- Leaflet CSS/JS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
@@ -14,8 +14,9 @@
     #app { display: flex; flex-direction: column; height: 100%; }
     #controls { padding: 10px; gap: 8px; display: flex; flex-wrap: wrap; align-items: center;
                 border-bottom: 1px solid #eee; background: #fafafa; }
-    #map { flex: 1 1 auto; }
-    #log { height: 140px; overflow:auto; font: 12px/1.4 ui-monospace, monospace; border-top: 1px solid #eee; padding: 8px; background:#fcfcfc;}
+    #map { flex: 1 1 auto; min-height: 60vh; } /* ensure height on Safari */
+    #log { height: 140px; overflow:auto; font: 12px/1.4 ui-monospace, monospace;
+           border-top: 1px solid #eee; padding: 8px; background:#fcfcfc;}
     button { padding: 8px 12px; border-radius: 8px; border: 1px solid #ccc; background:#fff; }
     .tag { font-size: 12px; padding: 2px 6px; border-radius: 999px; border:1px solid #ddd; background:#fff; }
   </style>
@@ -25,6 +26,7 @@
   <div id="controls">
     <button id="startBtn">Start tracking</button>
     <button id="stopBtn" disabled>Stop</button>
+    <button id="reloadBtn">Reload data</button>
     <span class="tag">Status: <span id="status">idle</span></span>
     <span class="tag">Backend: <span id="backendInfo">—</span></span>
   </div>
@@ -33,16 +35,17 @@
 </div>
 
 <script>
-// ====== CONFIG ======
-const BACKEND_BASE_URL = "https://https://probable-disco-4jrvrjq4wq94h5xp7-8000.app.github.dev"; // <- your Codespaces HTTPS (no trailing /)
-const GEOFENCE_DEFAULT_RADIUS = 150; // meters
-const DIRECTION_TOL_DEG = 60;        // direction gate tolerance
+// ==== SET THIS to your Codespaces HTTPS (no trailing /) ====
+const BACKEND_BASE_URL = "https://YOUR-SUBDOMAIN-8015.app.github.dev";
 
-// ====== STATE ======
+const GEOFENCE_DEFAULT_RADIUS = 150; // meters
+const DIRECTION_TOL_DEG = 60;        // direction gate
+
+// ---- State ----
 let map, userMarker, userPath;
 let cameras = [];
 let pairs = [];
-let geofences = {};         // cameraId -> L.circle
+let geofences = {};     // cameraId -> L.circle
 let watchId = null;
 let lastPos = null;
 let startTimestamps = {};   // startCameraId -> Date
@@ -56,7 +59,7 @@ const backendInfoEl = document.getElementById('backendInfo');
 function log(msg){ const t=new Date().toLocaleTimeString(); logEl.textContent += `[${t}] ${msg}\n`; logEl.scrollTop=logEl.scrollHeight; }
 function setStatus(s){ statusEl.textContent = s; }
 
-// ====== HELPERS ======
+// ---- Helpers ----
 function toRad(d){ return d * Math.PI / 180; }
 function haversine(a,b){
   const R=6371000;
@@ -69,7 +72,7 @@ function haversine(a,b){
 function bearing(from,to){
   const φ1=toRad(from.lat), φ2=toRad(to.lat), Δλ=toRad(to.lng-from.lng);
   const y=Math.sin(Δλ)*Math.cos(φ2);
-  const x=Math.cos(φ1)*sin(φ2)-Math.sin(φ1)*cos(φ2)*Math.cos(Δλ);
+  const x=Math.cos(φ1)*Math.sin(φ2)-Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ);
   const θ=Math.atan2(y,x)*180/Math.PI;
   return (θ+360)%360;
 }
@@ -83,11 +86,11 @@ function courseFrom(last,cur){
   return bearing(from,to);
 }
 
-// Try OSRM (HTTPS) for route distance; fallback to haversine if unreachable.
+// OSRM route distance (HTTPS). Fallback: haversine.
 async function routeDistanceMeters(aCoord, bCoord){
   try{
     const url = `https://router.project-osrm.org/route/v1/driving/${aCoord.lng},${aCoord.lat};${bCoord.lng},${bCoord.lat}?overview=false`;
-    const r = await fetch(url);
+    const r = await fetch(url, {cache:'no-store'});
     if(!r.ok) throw new Error('OSRM request failed');
     const j = await r.json();
     const dist = j?.routes?.[0]?.distance;
@@ -98,9 +101,9 @@ async function routeDistanceMeters(aCoord, bCoord){
   }
 }
 
-// ====== BACKEND (no custom headers → no CORS preflight) ======
+// ---- Backend ----
 async function fetchJSON(path){
-  const r = await fetch(BACKEND_BASE_URL + path);
+  const r = await fetch(BACKEND_BASE_URL + path, {cache: 'no-store'});
   if(!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -108,35 +111,48 @@ async function postJSON(path, body){
   await fetch(BACKEND_BASE_URL + path, {
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    cache: 'no-store'
   }).catch(e => log('POST failed: ' + e.message));
 }
 
-// ====== INIT MAP ======
+// ---- Map ----
 function initMap(){
-  map = L.map('map');
+  // Delay map creation until window load -> avoids Safari layout race
+  map = L.map('map', {zoomControl: true});
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
     maxZoom: 19, attribution: '&copy; OpenStreetMap'
   }).addTo(map);
   userPath = L.polyline([], {weight:3}).addTo(map);
+  // Invalidate size after first paint (Safari)
+  setTimeout(() => map.invalidateSize(true), 0);
 }
 
-// ====== LOAD CAMERAS & SEGMENTS ======
+// ---- Load data & draw geofences ----
 async function loadData(){
   backendInfoEl.textContent = BACKEND_BASE_URL;
   cameras = await fetchJSON('/v1/traffic/cameras');
-  pairs = await fetchJSON('/v1/traffic/segments');
+  pairs   = await fetchJSON('/v1/traffic/segments');
 
+  // Clear previous geofences
+  Object.values(geofences).forEach(c => map.removeLayer(c));
+  geofences = {};
+
+  // Circle radius per camera (max across segments)
   const radiusById = {};
   for(const p of pairs){
     const r = p.geofenceRadius ?? GEOFENCE_DEFAULT_RADIUS;
     radiusById[p.startCameraId] = Math.max(radiusById[p.startCameraId]||0, r);
     radiusById[p.endCameraId]   = Math.max(radiusById[p.endCameraId]||0, r);
   }
+
   for(const cam of cameras){
-    if(!(cam.id in radiusById)) continue; // ignore orphan cams
-    const latlng = [cam.lat, cam.lng];
-    const circle = L.circle(latlng, {radius: radiusById[cam.id], color:'#1e88e5', fillOpacity:0.08});
+    if(!(cam.id in radiusById)) continue; // ignore cameras not in any segment
+    const circle = L.circle([cam.lat, cam.lng], {
+      radius: radiusById[cam.id],
+      color:'#1e88e5',
+      fillOpacity:0.08
+    });
     circle.addTo(map).bindTooltip(cam.id);
     geofences[cam.id] = circle;
   }
@@ -144,17 +160,17 @@ async function loadData(){
   const ids = Object.keys(geofences);
   if(ids.length){
     const group = L.featureGroup(Object.values(geofences));
-    // Safari fix: wait until map is ready + defer to next tick
     map.whenReady(() => setTimeout(() => {
       map.fitBounds(group.getBounds().pad(0.2));
-      map.invalidateSize();
+      map.invalidateSize(true);
     }, 0));
-  } else {
-    if(cameras.length){ map.setView([cameras[0].lat, cameras[0].lng], 14); }
+  } else if (cameras.length) {
+    map.setView([cameras[0].lat, cameras[0].lng], 14);
   }
+  log(`Loaded ${cameras.length} cameras, ${pairs.length} segments.`);
 }
 
-// ====== TRACKING ======
+// ---- Tracking ----
 function startTracking(){
   if(!navigator.geolocation){ log('Geolocation not supported'); return; }
   setStatus('tracking');
@@ -254,20 +270,24 @@ async function onPosition(pos){
   lastPos = pos;
 }
 
-// ====== BOOT ======
-(async function boot(){
-  initMap();
-  try{
+// ---- Boot (after full window load for Safari stability) ----
+window.addEventListener('load', async () => {
+  try {
+    initMap();
     await loadData();
-    log('Loaded cameras and segments.');
     setStatus('ready');
-  }catch(e){
-    log('Failed to load backend data: ' + e.message);
+    log('Loaded cameras and segments.');
+  } catch (e) {
     setStatus('error');
+    log('Failed to load backend data: ' + (e?.message || e));
   }
   document.getElementById('startBtn').onclick = startTracking;
   document.getElementById('stopBtn').onclick = stopTracking;
-})();
+  document.getElementById('reloadBtn').onclick = async () => {
+    try { await loadData(); log('Reloaded cameras/segments.'); }
+    catch(e){ log('Reload failed: ' + (e?.message || e)); }
+  };
+});
 </script>
 </body>
 </html>
