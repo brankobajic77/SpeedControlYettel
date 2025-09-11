@@ -232,3 +232,95 @@ def clear_reports(confirm: str = "NO"):
     if os.path.exists(REPORTS_FILE):
         os.remove(REPORTS_FILE)
     return {"status": "ok", "cleared": True}
+# ==== ADMIN ROUTES (router) – add this block ====
+from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
+import io, csv
+from collections import Counter
+
+admin = APIRouter()
+
+REPORTS_FILE = globals().get("REPORTS_FILE", "avg_speed_reports.json")
+
+def _load_reports2():
+    if not os.path.exists(REPORTS_FILE):
+        return []
+    try:
+        with open(REPORTS_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def _parse_iso2(dt_str: str):
+    try:
+        if dt_str.endswith("Z"):
+            dt_str = dt_str.replace("Z", "+00:00")
+        return datetime.fromisoformat(dt_str)
+    except Exception:
+        return None
+
+@admin.get("/reports")
+def list_reports2(limit: int = 200, since: Optional[str] = None, segment: Optional[str] = None):
+    items = _load_reports2()
+    if since:
+        sdt = _parse_iso2(since)
+        if sdt:
+            items = [r for r in items if _parse_iso2(r.get("endedAt","")) and _parse_iso2(r["endedAt"]) >= sdt]
+    if segment:
+        items = [r for r in items if r.get("segmentName") == segment]
+
+    # compute duration if missing
+    for r in items:
+        st = _parse_iso2(r.get("startedAt",""))
+        et = _parse_iso2(r.get("endedAt",""))
+        r["durationSec"] = (et - st).total_seconds() if st and et else None
+
+    items = sorted(items, key=lambda r: r.get("endedAt",""))[-limit:]
+    return items
+
+@admin.get("/reports/stats")
+def reports_stats2():
+    items = _load_reports2()
+    by_seg = Counter(r.get("segmentName","") for r in items)
+    return {"count": len(items), "bySegment": dict(by_seg)}
+
+@admin.get("/reports/export.csv")
+def export_reports_csv2():
+    rows = _load_reports2()
+    fieldnames = [
+        "segmentName","startCameraId","endCameraId",
+        "startedAt","endedAt","routeDistanceMeters",
+        "avgSpeedKmH","appVersion","deviceId"
+    ]
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=fieldnames)
+    w.writeheader()
+    for r in rows:
+        w.writerow({k: r.get(k, "") for k in fieldnames})
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=avg_speed_reports.csv"}
+    )
+
+@admin.delete("/reports")
+def clear_reports2(confirm: str = "NO"):
+    if confirm != "YES":
+        return {"status": "confirm required", "hint": "call with ?confirm=YES"}
+    if os.path.exists(REPORTS_FILE):
+        os.remove(REPORTS_FILE)
+    return {"status": "ok", "cleared": True}
+
+# Attach router under /v1/traffic
+app.include_router(admin, prefix="/v1/traffic", tags=["admin"])
+
+# Dump all registered routes to console (for verification)
+print("=== REGISTERED ROUTES ===")
+for r in app.routes:
+    try:
+        methods = ",".join(sorted(r.methods))
+    except Exception:
+        methods = ""
+    print(f"{methods:15s} {r.path}")
+print("=========================")
