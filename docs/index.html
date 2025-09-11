@@ -2,51 +2,263 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Yettel Average Speed – Web Smoke Test</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+  <title>Yettel Average Speed (Web Test)</title>
+  <!-- Leaflet CSS/JS (CDN) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <style>
-    body{font:14px/1.5 system-ui, sans-serif; margin:24px; max-width:780px}
-    code{background:#f6f8fa; padding:2px 6px; border-radius:6px}
-    .ok{color:#0a7}.err{color:#c22}
+    html, body { height: 100%; margin: 0; }
+    #app { display: flex; flex-direction: column; height: 100%; }
+    #controls { padding: 10px; gap: 8px; display: flex; flex-wrap: wrap; align-items: center;
+                border-bottom: 1px solid #eee; background: #fafafa; }
+    #map { flex: 1 1 auto; }
+    #log { height: 140px; overflow:auto; font: 12px/1.4 ui-monospace, monospace; border-top: 1px solid #eee; padding: 8px; background:#fcfcfc;}
+    button { padding: 8px 12px; border-radius: 8px; border: 1px solid #ccc; background:#fff; }
+    .tag { font-size: 12px; padding: 2px 6px; border-radius: 999px; border:1px solid #ddd; background:#fff; }
   </style>
 </head>
 <body>
-  <h1>Yettel Average Speed – Web Smoke Test</h1>
-  <p>Backend: <code id="base"></code></p>
-  <p>Status: <span id="status">loading…</span></p>
-  <h3>Loaded cameras</h3>
-  <ul id="cams"></ul>
+<div id="app">
+  <div id="controls">
+    <button id="startBtn">Start tracking</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <span class="tag">Status: <span id="status">idle</span></span>
+    <span class="tag">Backend: <span id="backendInfo">—</span></span>
+  </div>
+  <div id="map"></div>
+  <pre id="log"></pre>
+</div>
 
-  <script>
-    // ⬇⬇⬇ stavi tačan Codespaces HTTPS URL (bez završne /)
-    const BACKEND_BASE_URL = "https://probable-disco-4jrvrjq4wq94h5xp7-8000.app.github.dev";
+<script>
+// ====== CONFIG ======
+const BACKEND_BASE_URL = "https://probable-disco-4jrvrjq4wq94h5xp7-8000.app.github.dev"; // <- your Codespaces HTTPS (no trailing /)
+const GEOFENCE_DEFAULT_RADIUS = 150; // meters
+const DIRECTION_TOL_DEG = 60;        // direction gate tolerance
 
-    document.getElementById('base').textContent = BACKEND_BASE_URL;
+// ====== STATE ======
+let map, userMarker, userPath;
+let cameras = [];
+let pairs = [];
+let geofences = {};         // cameraId -> L.circle
+let watchId = null;
+let lastPos = null;
+let startTimestamps = {};   // startCameraId -> Date
+let lastEntryTimes = {};    // cameraId -> Date (anti-bounce)
+const MIN_REENTRY_SEC = 30;
 
-    async function load() {
-      try {
-        // NEMA custom header-a → nema preflight-a
-        const r = await fetch(BACKEND_BASE_URL + "/v1/traffic/cameras");
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        const cams = await r.json();
+const logEl = document.getElementById('log');
+const statusEl = document.getElementById('status');
+const backendInfoEl = document.getElementById('backendInfo');
 
-        document.getElementById('status').textContent = "OK";
-        document.getElementById('status').className = "ok";
+function log(msg){ const t=new Date().toLocaleTimeString(); logEl.textContent += `[${t}] ${msg}\n`; logEl.scrollTop=logEl.scrollHeight; }
+function setStatus(s){ statusEl.textContent = s; }
 
-        const ul = document.getElementById('cams');
-        ul.innerHTML = "";
-        cams.forEach(c => {
-          const li = document.createElement('li');
-          li.textContent = `${c.id} @ (${c.lat.toFixed(5)}, ${c.lng.toFixed(5)})`;
-          ul.appendChild(li);
-        });
-      } catch (e) {
-        const s = document.getElementById('status');
-        s.textContent = "ERROR: " + e.message;
-        s.className = "err";
-      }
+// ====== HELPERS ======
+function toRad(d){ return d * Math.PI / 180; }
+function haversine(a,b){
+  const R=6371000;
+  const dLat=toRad(b.lat - a.lat), dLon=toRad(b.lng - a.lng);
+  const lat1=toRad(a.lat), lat2=toRad(b.lat);
+  const sinDLat=Math.sin(dLat/2), sinDLon=Math.sin(dLon/2);
+  const h = sinDLat*sinDLat + Math.cos(lat1)*Math.cos(lat2)*sinDLon*sinDLon;
+  return 2*R*Math.asin(Math.sqrt(h));
+}
+function bearing(from,to){
+  const φ1=toRad(from.lat), φ2=toRad(to.lat), Δλ=toRad(to.lng-from.lng);
+  const y=Math.sin(Δλ)*Math.cos(φ2);
+  const x=Math.cos(φ1)*Math.sin(φ2)-Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ);
+  const θ=Math.atan2(y,x)*180/Math.PI;
+  return (θ+360)%360;
+}
+function bearingClose(a,b,tol){
+  const diff=Math.abs(((a-b+540)%360)-180);
+  return diff <= tol;
+}
+function courseFrom(last,cur){
+  const from={lat:last.coords.latitude,lng:last.coords.longitude};
+  const to={lat:cur.coords.latitude,lng:cur.coords.longitude};
+  return bearing(from,to);
+}
+
+// Try OSRM (HTTPS) for route distance; fallback to haversine if unreachable.
+async function routeDistanceMeters(aCoord, bCoord){
+  try{
+    const url = `https://router.project-osrm.org/route/v1/driving/${aCoord.lng},${aCoord.lat};${bCoord.lng},${bCoord.lat}?overview=false`;
+    const r = await fetch(url);
+    if(!r.ok) throw new Error('OSRM request failed');
+    const j = await r.json();
+    const dist = j?.routes?.[0]?.distance;
+    if(typeof dist === 'number') return dist;
+    throw new Error('No route');
+  }catch(_){
+    return haversine(aCoord,bCoord);
+  }
+}
+
+// ====== BACKEND (no custom headers → no CORS preflight) ======
+async function fetchJSON(path){
+  const r = await fetch(BACKEND_BASE_URL + path);
+  if(!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+async function postJSON(path, body){
+  await fetch(BACKEND_BASE_URL + path, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  }).catch(e => log('POST failed: ' + e.message));
+}
+
+// ====== INIT MAP ======
+function initMap(){
+  map = L.map('map');
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    maxZoom: 19, attribution: '&copy; OpenStreetMap'
+  }).addTo(map);
+  userPath = L.polyline([], {weight:3}).addTo(map);
+}
+
+// ====== LOAD CAMERAS & SEGMENTS ======
+async function loadData(){
+  backendInfoEl.textContent = BACKEND_BASE_URL;
+  cameras = await fetchJSON('/v1/traffic/cameras');
+  pairs = await fetchJSON('/v1/traffic/segments');
+
+  const radiusById = {};
+  for(const p of pairs){
+    const r = p.geofenceRadius ?? GEOFENCE_DEFAULT_RADIUS;
+    radiusById[p.startCameraId] = Math.max(radiusById[p.startCameraId]||0, r);
+    radiusById[p.endCameraId]   = Math.max(radiusById[p.endCameraId]||0, r);
+  }
+  for(const cam of cameras){
+    if(!(cam.id in radiusById)) continue; // ignore orphan cams
+    const latlng = [cam.lat, cam.lng];
+    const circle = L.circle(latlng, {radius: radiusById[cam.id], color:'#1e88e5', fillOpacity:0.08});
+    circle.addTo(map).bindTooltip(cam.id);
+    geofences[cam.id] = circle;
+  }
+
+  const ids = Object.keys(geofences);
+  if(ids.length){
+    const group = L.featureGroup(ids.map(id => geofences[id]));
+    map.fitBounds(group.getBounds().pad(0.2));
+  } else {
+    // Fallback: center on first camera if any
+    if(cameras.length){ map.setView([cameras[0].lat, cameras[0].lng], 14); }
+  }
+}
+
+// ====== TRACKING ======
+function startTracking(){
+  if(!navigator.geolocation){ log('Geolocation not supported'); return; }
+  setStatus('tracking');
+  document.getElementById('startBtn').disabled = true;
+  document.getElementById('stopBtn').disabled = false;
+  watchId = navigator.geolocation.watchPosition(onPosition, onError, {
+    enableHighAccuracy: true, maximumAge: 1000, timeout: 10000
+  });
+}
+function stopTracking(){
+  if(watchId) navigator.geolocation.clearWatch(watchId);
+  watchId = null;
+  setStatus('stopped');
+  document.getElementById('startBtn').disabled = false;
+  document.getElementById('stopBtn').disabled = true;
+}
+function onError(err){ log(`Geolocation error: ${err.code} ${err.message}`); }
+
+async function onPosition(pos){
+  const {latitude, longitude} = pos.coords;
+  const cur = [latitude, longitude];
+
+  if(!userMarker){
+    userMarker = L.marker(cur).addTo(map).bindTooltip('You');
+    map.setView(cur, 15);
+  } else { userMarker.setLatLng(cur); }
+
+  const path = userPath.getLatLngs(); path.push(L.latLng(cur[0], cur[1])); userPath.setLatLngs(path);
+
+  const course = lastPos ? courseFrom(lastPos, pos) : null;
+  const now = Date.now();
+  function canEnter(id){ const last = lastEntryTimes[id]||0; return (now-last)/1000 >= MIN_REENTRY_SEC; }
+  function markEnter(id){ lastEntryTimes[id]=now; }
+
+  // START
+  for(const seg of pairs){
+    const startCam = cameras.find(c => c.id === seg.startCameraId);
+    if(!startCam) continue;
+    const circle = geofences[startCam.id]; if(!circle) continue;
+    const inside = circle.getLatLng().distanceTo(cur) <= (seg.geofenceRadius ?? GEOFENCE_DEFAULT_RADIUS);
+    if(!inside || !canEnter(startCam.id)) continue;
+
+    if(course != null){
+      const endCam = cameras.find(c => c.id === seg.endCameraId) || startCam;
+      const expected = bearing({lat:startCam.lat,lng:startCam.lng},{lat:endCam.lat,lng:endCam.lng});
+      if(!bearingClose(course, expected, DIRECTION_TOL_DEG)) continue;
     }
-    load();
-  </script>
+    startTimestamps[startCam.id] = new Date();
+    markEnter(startCam.id);
+    log(`Entered START ${startCam.id} at ${startTimestamps[startCam.id].toLocaleTimeString()}`);
+  }
+
+  // END
+  for(const seg of pairs){
+    const endCam = cameras.find(c => c.id === seg.endCameraId);
+    if(!endCam) continue;
+    const circle = geofences[endCam.id]; if(!circle) continue;
+    const inside = circle.getLatLng().distanceTo(cur) <= (seg.geofenceRadius ?? GEOFENCE_DEFAULT_RADIUS);
+    if(!inside || !canEnter(endCam.id)) continue;
+
+    const startTime = startTimestamps[seg.startCameraId];
+    if(!startTime) continue;
+
+    if(course != null){
+      const startCam = cameras.find(c => c.id === seg.startCameraId) || endCam;
+      const expected = bearing({lat:startCam.lat,lng:startCam.lng},{lat:endCam.lat,lng:endCam.lng});
+      if(!bearingClose(course, expected, DIRECTION_TOL_DEG)) continue;
+    }
+
+    const endTime = new Date();
+    delete startTimestamps[seg.startCameraId];
+    markEnter(endCam.id);
+
+    const a = cameras.find(c=>c.id===seg.startCameraId);
+    const b = endCam;
+    const distM = await routeDistanceMeters({lat:a.lat,lng:a.lng},{lat:b.lat,lng:b.lng});
+    const durSec = (endTime - startTime)/1000;
+    if(durSec <= 0){ log('Duration zero? Skipping'); return; }
+    const avgKmh = (distM / durSec) * 3.6;
+
+    log(`Segment "${seg.name}" avg = ${avgKmh.toFixed(1)} km/h (dist ${distM.toFixed(0)} m, dur ${durSec.toFixed(0)} s)`);
+
+    const payload = {
+      segmentName: seg.name,
+      startCameraId: seg.startCameraId,
+      endCameraId: seg.endCameraId,
+      startedAt: startTime.toISOString(),
+      endedAt: endTime.toISOString(),
+      routeDistanceMeters: distM,
+      avgSpeedKmH: avgKmh,
+      appVersion: "web-test",
+      deviceId: "iphone-web"
+    };
+    postJSON('/v1/traffic/avg-speed-report', payload);
+  }
+
+  lastPos = pos;
+}
+
+// ====== BOOT ======
+(async function boot(){
+  initMap();
+  try{ await loadData(); log('Loaded cameras and segments.'); setStatus('ready'); }
+  catch(e){ log('Failed to load backend data: ' + e.message); setStatus('error'); }
+  document.getElementById('startBtn').onclick = startTracking;
+  document.getElementById('stopBtn').onclick = stopTracking;
+})();
+</script>
 </body>
 </html>
