@@ -7,8 +7,7 @@
   <style>
     body{font:14px/1.5 system-ui, sans-serif; margin:24px; max-width:780px}
     code{background:#f6f8fa; padding:2px 6px; border-radius:6px}
-    .ok{color:#0a7}
-    .err{color:#c22}
+    .ok{color:#0a7}.err{color:#c22}
   </style>
 </head>
 <body>
@@ -17,21 +16,23 @@
   <p>Status: <span id="status">loading…</span></p>
   <h3>Loaded cameras</h3>
   <ul id="cams"></ul>
+
   <script>
-    // ←↓↓↓ OVDE STAVI TAČAN Codespaces HTTPS URL (bez završne /)
+    // ⬇⬇⬇ stavi tačan Codespaces HTTPS URL (bez završne /)
     const BACKEND_BASE_URL = "https://probable-disco-4jrvrjq4wq94h5xp7-8000.app.github.dev";
 
     document.getElementById('base').textContent = BACKEND_BASE_URL;
 
-    async function ping() {
+    async function load() {
       try {
-        const r = await fetch(BACKEND_BASE_URL + "/v1/traffic/cameras", {
-          headers: { "Authorization": "Bearer dev-token" }
-        });
+        // NEMA custom header-a → nema preflight-a
+        const r = await fetch(BACKEND_BASE_URL + "/v1/traffic/cameras");
         if (!r.ok) throw new Error("HTTP " + r.status);
         const cams = await r.json();
+
         document.getElementById('status').textContent = "OK";
         document.getElementById('status').className = "ok";
+
         const ul = document.getElementById('cams');
         ul.innerHTML = "";
         cams.forEach(c => {
@@ -45,7 +46,7 @@
         s.className = "err";
       }
     }
-    ping();
+    load();
   </script>
 </body>
 </html>
