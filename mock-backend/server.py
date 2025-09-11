@@ -146,3 +146,87 @@ def post_avg_speed(report: AvgSpeedReportDTO, authorization: Optional[str] = Hea
 
     print("New avg-speed report:", report)
     return {"status": "ok"}
+# --- Admin: list/export/clear reports ---
+from fastapi.responses import StreamingResponse
+from collections import Counter
+import io, csv
+
+def _load_reports():
+    if not os.path.exists(REPORTS_FILE):
+        return []
+    try:
+        with open(REPORTS_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def _parse_iso(dt_str: str) -> datetime:
+    # tolerate "Z" suffix and plain ISO
+    try:
+        if dt_str.endswith("Z"):
+            dt_str = dt_str.replace("Z", "+00:00")
+        return datetime.fromisoformat(dt_str)
+    except Exception:
+        return None
+
+@app.get("/v1/traffic/reports")
+def list_reports(
+    limit: int = 200,
+    since: Optional[str] = None,       # ISO8601, e.g. 2025-09-11T12:00:00Z
+    segment: Optional[str] = None
+):
+    items = _load_reports()
+
+    # optional filters
+    if since:
+        sdt = _parse_iso(since)
+        if sdt:
+            items = [r for r in items
+                     if _parse_iso(r.get("endedAt", "")) and _parse_iso(r["endedAt"]) >= sdt]
+    if segment:
+        items = [r for r in items if r.get("segmentName") == segment]
+
+    # add computed durationSec
+    for r in items:
+        st = _parse_iso(r.get("startedAt",""))
+        et = _parse_iso(r.get("endedAt",""))
+        r["durationSec"] = (et - st).total_seconds() if st and et else None
+
+    # newest last; cap by limit
+    items = sorted(items, key=lambda r: r.get("endedAt",""))[-limit:]
+    return items
+
+@app.get("/v1/traffic/reports/stats")
+def reports_stats():
+    items = _load_reports()
+    by_seg = Counter(r.get("segmentName","") for r in items)
+    return {"count": len(items), "bySegment": dict(by_seg)}
+
+@app.get("/v1/traffic/reports/export.csv")
+def export_reports_csv():
+    rows = _load_reports()
+    fieldnames = [
+        "segmentName","startCameraId","endCameraId",
+        "startedAt","endedAt","routeDistanceMeters",
+        "avgSpeedKmH","appVersion","deviceId"
+    ]
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=fieldnames)
+    w.writeheader()
+    for r in rows:
+        w.writerow({k: r.get(k, "") for k in fieldnames})
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=avg_speed_reports.csv"}
+    )
+
+@app.delete("/v1/traffic/reports")
+def clear_reports(confirm: str = "NO"):
+    # DEV ONLY: requires ?confirm=YES
+    if confirm != "YES":
+        return {"status": "confirm required", "hint": "call with ?confirm=YES"}
+    if os.path.exists(REPORTS_FILE):
+        os.remove(REPORTS_FILE)
+    return {"status": "ok", "cleared": True}
